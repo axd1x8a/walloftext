@@ -1,0 +1,11 @@
+services:
+  walloftext:
+    restart: unless-stopped
+    container_name: walloftext
+    image: walloftext
+    pull_policy: never
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./data:/app/data

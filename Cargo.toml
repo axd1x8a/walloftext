@@ -1,0 +1,9 @@
+[workspace]
+members = ["shared", "backend", "frontend", "tools/font-gen", "tools/video"]
+resolver = "2"
+
+[workspace.dependencies]
+walloftext-shared = { path = "shared" }
+bitcode = { version = "0.6", features = ["derive"] }
+anyhow = "1"
+zstd = "0.14"

@@ -1,0 +1,17 @@
+[package]
+name = "font-gen"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "font-gen"
+path = "src/main.rs"
+
+[dependencies]
+walloftext-shared.workspace = true
+bitcode.workspace = true
+anyhow.workspace = true
+zstd.workspace = true
+fontdue = "0.9"
+clap = { version = "4", features = ["derive"] }
+png = "0.18"

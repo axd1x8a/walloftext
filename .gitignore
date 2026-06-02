@@ -1,0 +1,7 @@
+walloftext.sled/
+target/
+docker-compose.override.y*ml
+compose.override.y*ml
+walloftext.aof
+walloftext.snap*
+segments/

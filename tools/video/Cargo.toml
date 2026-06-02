@@ -1,0 +1,18 @@
+[package]
+name = "walloftext-video"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "walloftext-video"
+path = "src/main.rs"
+
+[dependencies]
+walloftext-shared.workspace = true
+bitcode.workspace = true
+zstd.workspace = true
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }
+tungstenite = { version = "0.30", features = ["native-tls"] }
+image = { version = "0.25", default-features = false, features = ["gif"] }
+rayon = "1"
