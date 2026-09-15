@@ -35,9 +35,14 @@ fn vs_main(
     @location(4) glyph_wh: vec2<f32>,
     @location(5) cell_off: vec2<f32>,
 ) -> VsOut {
+    let cell_px = vec2<f32>(u.atlas_cell_w, u.atlas_cell_h);
+    let overhang = max(glyph_wh - cell_px, vec2<f32>(0.0));
+    let quad_px = cell_px + overhang;
+    let px_to_world = vec2<f32>(u.cw, u.ch) * u.step / cell_px;
+
     let world_pos = grid_pos * vec2<f32>(u.cw, u.ch) - vec2<f32>(u.vx, u.vy);
-    let draw_size = vec2<f32>(u.cw * u.step, u.ch * u.step);
-    let dev = (world_pos + corner * draw_size) * u.dpr;
+    let corner_px = corner * quad_px - overhang * 0.5;
+    let dev = (world_pos + corner_px * px_to_world) * u.dpr;
     let ndc = dev / vec2<f32>(u.canvas_w, u.canvas_h) * 2.0 - 1.0;
 
     var out: VsOut;
@@ -46,7 +51,7 @@ fn vs_main(
     out.atlas_xy = atlas_xy;
     out.glyph_wh = glyph_wh;
 
-    out.local_px = corner * vec2<f32>(u.atlas_cell_w, u.atlas_cell_h) - cell_off;
+    out.local_px = corner_px - cell_off;
 
     let atlas_size = vec2<f32>(u.atlas_w, u.atlas_h);
     out.min_uv = (atlas_xy + vec2<f32>(0.5)) / atlas_size;
