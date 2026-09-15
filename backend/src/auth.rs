@@ -119,15 +119,19 @@ impl AppState {
             None => {
                 let new_hash = Self::hash_pw(name, pass);
                 let mut users = self.inner.users.write().await;
-                if let Some(Some(u)) = users.get_mut(acc.user_id as usize) {
-                    u.password_hash = Some(new_hash);
-                    let updated = u.clone();
-                    drop(users);
-                    let _ = self
-                        .inner
-                        .segment_tx
-                        .send(SegmentEvent::UserUpsert(updated));
+                let Some(Some(u)) = users.get_mut(acc.user_id as usize) else {
+                    return false;
+                };
+                if let Some(existing) = &u.password_hash {
+                    return *existing == new_hash;
                 }
+                u.password_hash = Some(new_hash);
+                let updated = u.clone();
+                drop(users);
+                let _ = self
+                    .inner
+                    .segment_tx
+                    .send(SegmentEvent::UserUpsert(updated));
                 true
             }
         }
@@ -140,9 +144,6 @@ impl AppState {
         password: &str,
         token: &str,
     ) -> Result<UserAccount, AppError> {
-        if self.get_user_by_name(new_username).await.is_some() {
-            return Err(AppError::BadInput("username taken".into()));
-        }
         let anon_acc = self
             .get_user_by_name(anon_name)
             .await
@@ -163,6 +164,9 @@ impl AppState {
 
         {
             let mut name_map = self.inner.name_to_id.write().await;
+            if name_map.contains_key(new_username) {
+                return Err(AppError::BadInput("username taken".into()));
+            }
             name_map.remove(anon_name);
             name_map.insert(new_username.to_string(), upgraded.user_id);
         }

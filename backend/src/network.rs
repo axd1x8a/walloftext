@@ -407,6 +407,12 @@ async fn handle_socket(
         let mut user_id = initial_uid;
         let mut is_anon = initial_is_anon;
         let current_token = resolved_token;
+        let mut home_anon: Option<(String, u32)> = if initial_is_anon {
+            Some((anon_name.clone(), initial_uid))
+        } else {
+            None
+        };
+        let anon_name = anon_name;
 
         while let Some(Ok(msg)) = stream.next().await {
             let bytes = match msg {
@@ -527,6 +533,7 @@ async fn handle_socket(
                         continue;
                     }
 
+                    let mut was_signup = false;
                     let auth_result = match recv_state.get_user_by_name(&uname).await {
                         Some(acc) => {
                             if recv_state.verify_user(&uname, &password).await {
@@ -545,6 +552,7 @@ async fn handle_socket(
                         }
                         None => {
                             if is_anon {
+                                was_signup = true;
                                 recv_state
                                     .upgrade_to_named(&anon_name, &uname, &password, &current_token)
                                     .await
@@ -567,6 +575,9 @@ async fn handle_socket(
                             recv_state.clear_login_throttle(&ip);
                             user_id = acc.user_id;
                             is_anon = false;
+                            if was_signup {
+                                home_anon = None;
+                            }
                             if let Some(info) = recv_state
                                 .inner
                                 .connections
@@ -590,24 +601,43 @@ async fn handle_socket(
                 }
 
                 ClientMsg::Logout => {
-                    user_id = initial_uid;
-                    is_anon = true;
-                    recv_state
-                        .inner
-                        .sessions
-                        .write()
-                        .await
-                        .insert(current_token.clone(), user_id);
-                    let new_name = recv_state.username_of(user_id).await;
-                    if let Some(info) = recv_state
-                        .inner
-                        .connections
-                        .lock()
-                        .unwrap()
-                        .get_mut(&conn_id)
-                    {
-                        info.user_id = user_id;
-                        info.name = new_name;
+                    if !is_anon {
+                        let (name, uid) = match home_anon.clone() {
+                            Some(home) => home,
+                            None => {
+                                let (name, uid, _) = recv_state.create_anonymous_session().await;
+                                (name, uid)
+                            }
+                        };
+
+                        recv_state
+                            .inner
+                            .sessions
+                            .write()
+                            .await
+                            .insert(current_token.clone(), uid);
+
+                        user_id = uid;
+                        is_anon = true;
+                        home_anon = Some((name.clone(), uid));
+
+                        if let Some(info) = recv_state
+                            .inner
+                            .connections
+                            .lock()
+                            .unwrap()
+                            .get_mut(&conn_id)
+                        {
+                            info.user_id = user_id;
+                            info.name = name.clone();
+                        }
+
+                        let _ = direct_tx.send(encode(&ServerMsg::Welcome {
+                            author_id: user_id,
+                            author: name.clone(),
+                            anon_name: name,
+                            session_token: current_token.clone(),
+                        }));
                     }
                 }
 
