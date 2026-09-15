@@ -327,6 +327,7 @@ impl Selection {
 pub struct CursorState {
     pub pos: WorldCoords,
     pub sel: Selection,
+    pub type_start_x: i16,
 }
 
 impl Default for CursorState {
@@ -334,12 +335,20 @@ impl Default for CursorState {
         Self {
             pos: WorldCoords { x: 0, y: 0 },
             sel: Selection::default(),
+            type_start_x: 0,
         }
     }
 }
 
 impl CursorState {
     pub fn move_to(&mut self, pos: WorldCoords, color: Rgb) {
+        self.pos = pos;
+        self.type_start_x = pos.x;
+        self.sel.clear();
+        send_cursor_if_changed(pos, color);
+    }
+
+    pub fn type_move_to(&mut self, pos: WorldCoords, color: Rgb) {
         self.pos = pos;
         self.sel.clear();
         send_cursor_if_changed(pos, color);
@@ -349,12 +358,14 @@ impl CursorState {
         let anchor = self.pos;
         self.sel.extend(anchor, pos);
         self.pos = pos;
+        self.type_start_x = pos.x;
         send_cursor_if_changed(pos, color);
     }
 
     pub fn drag_sel_to(&mut self, pos: WorldCoords, color: Rgb) {
         self.sel.drag_to(pos);
         self.pos = pos;
+        self.type_start_x = pos.x;
         send_cursor_if_changed(pos, color);
     }
 }

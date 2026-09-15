@@ -222,7 +222,7 @@ pub fn dispatch(action: Action) {
             with_ui(|ui| {
                 let color = ui.color;
                 let new_pos = WorldCoords {
-                    x: 0,
+                    x: ui.cursor.type_start_x,
                     y: ui.cursor.pos.offset(0, 1).y,
                 };
                 ui.cursor.move_to(new_pos, color);
@@ -239,7 +239,7 @@ pub fn dispatch(action: Action) {
             with_ui(|ui| {
                 let color = ui.color;
                 let new_pos = ui.cursor.pos.offset(1, 0);
-                ui.cursor.move_to(new_pos, color);
+                ui.cursor.type_move_to(new_pos, color);
             });
             scroll_to_cursor();
             render_all();
@@ -604,7 +604,7 @@ pub fn dispatch(action: Action) {
             with_ui(|ui| {
                 let color = ui.color;
                 let new_pos = ui.cursor.pos.offset(1, 0);
-                ui.cursor.move_to(new_pos, color);
+                ui.cursor.type_move_to(new_pos, color);
             });
             scroll_to_cursor();
             render_all();
@@ -615,7 +615,7 @@ pub fn dispatch(action: Action) {
             with_ui(|ui| {
                 let color = ui.color;
                 let new_pos = WorldCoords {
-                    x: 0,
+                    x: ui.cursor.type_start_x,
                     y: ui.cursor.pos.offset(0, 1).y,
                 };
                 ui.cursor.move_to(new_pos, color);
