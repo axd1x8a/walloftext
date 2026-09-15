@@ -412,7 +412,6 @@ async fn handle_socket(
         } else {
             None
         };
-        let anon_name = anon_name;
 
         while let Some(Ok(msg)) = stream.next().await {
             let bytes = match msg {
@@ -550,11 +549,16 @@ async fn handle_socket(
                                 Err("invalid credentials".to_string())
                             }
                         }
-                        None => {
-                            if is_anon {
+                        None => match (is_anon, &home_anon) {
+                            (true, Some((current_anon_name, _))) => {
                                 was_signup = true;
                                 recv_state
-                                    .upgrade_to_named(&anon_name, &uname, &password, &current_token)
+                                    .upgrade_to_named(
+                                        current_anon_name,
+                                        &uname,
+                                        &password,
+                                        &current_token,
+                                    )
                                     .await
                                     .inspect(|acc| {
                                         tracing::info!(
@@ -564,10 +568,9 @@ async fn handle_socket(
                                         );
                                     })
                                     .map_err(|e| e.to_string())
-                            } else {
-                                Err("Invalid login attempt".to_string())
                             }
-                        }
+                            _ => Err("Invalid login attempt".to_string()),
+                        },
                     };
 
                     match auth_result {
