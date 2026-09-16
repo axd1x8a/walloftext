@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use rand::{
@@ -16,59 +16,75 @@ use crate::state::{
     UserAccount, WorldShard, WorldSnapshot,
 };
 
+pub const SEGMENT_FLUSH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn new_segment(prev_id: u64) -> Segment {
+    Segment {
+        segment_id: prev_id + 1,
+        prev_segment_id: if prev_id == 0 { None } else { Some(prev_id) },
+        new_users: Default::default(),
+        new_regions: Default::default(),
+        actions: Vec::with_capacity(MAX_HOT_ACTIONS),
+    }
+}
+
+fn has_pending(segment: &Segment) -> bool {
+    !segment.actions.is_empty() || !segment.new_users.is_empty() || !segment.new_regions.is_empty()
+}
+
 pub fn start_segment_worker(
     mut rx: mpsc::UnboundedReceiver<SegmentEvent>,
     last_segment_id: u64,
     flushed_id: Arc<AtomicU64>,
+    force_flush: Arc<AtomicBool>,
 ) {
     std::thread::spawn(move || {
         std::fs::create_dir_all(SEGMENT_DIR).expect("cannot create segments dir");
 
-        let mut current = Segment {
-            segment_id: last_segment_id + 1,
-            prev_segment_id: if last_segment_id == 0 {
-                None
-            } else {
-                Some(last_segment_id)
-            },
-            new_users: Default::default(),
-            new_regions: Default::default(),
-            actions: Vec::with_capacity(MAX_HOT_ACTIONS),
-        };
+        let mut current = new_segment(last_segment_id);
+        let mut last_flush = std::time::Instant::now();
 
-        while let Some(event) = rx.blocking_recv() {
-            match event {
-                SegmentEvent::Action(action) => {
-                    current.actions.push(action);
-                    if current.actions.len() >= MAX_HOT_ACTIONS {
-                        finalize_segment(&current);
-                        flushed_id.store(current.segment_id, Ordering::Relaxed);
-                        let next_id = current.segment_id + 1;
-                        current = Segment {
-                            segment_id: next_id,
-                            prev_segment_id: Some(current.segment_id),
-                            new_users: Default::default(),
-                            new_regions: Default::default(),
-                            actions: Vec::with_capacity(MAX_HOT_ACTIONS),
-                        };
-                    }
-                }
-                SegmentEvent::UserUpsert(u) => {
-                    current.new_users.insert(u.user_id, u);
-                }
-                SegmentEvent::RegionUpsert(r) => {
-                    current.new_regions.insert(r.id, r);
-                }
-                SegmentEvent::RegionRemove(id) => {
-                    current.new_regions.remove(&id);
+        'outer: loop {
+            loop {
+                match rx.try_recv() {
+                    Ok(event) => match event {
+                        SegmentEvent::Action(action) => {
+                            current.actions.push(action);
+                            if current.actions.len() >= MAX_HOT_ACTIONS {
+                                finalize_segment(&current);
+                                flushed_id.store(current.segment_id, Ordering::Relaxed);
+                                current = new_segment(current.segment_id);
+                                last_flush = std::time::Instant::now();
+                            }
+                        }
+                        SegmentEvent::UserUpsert(u) => {
+                            current.new_users.insert(u.user_id, u);
+                        }
+                        SegmentEvent::RegionUpsert(r) => {
+                            current.new_regions.insert(r.id, r);
+                        }
+                        SegmentEvent::RegionRemove(id) => {
+                            current.new_regions.remove(&id);
+                        }
+                    },
+                    Err(mpsc::error::TryRecvError::Empty) => break,
+                    Err(mpsc::error::TryRecvError::Disconnected) => break 'outer,
                 }
             }
+
+            let due = last_flush.elapsed() >= SEGMENT_FLUSH_INTERVAL
+                || force_flush.swap(false, Ordering::Relaxed);
+            if has_pending(&current) && due {
+                finalize_segment(&current);
+                flushed_id.store(current.segment_id, Ordering::Relaxed);
+                current = new_segment(current.segment_id);
+                last_flush = std::time::Instant::now();
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(200));
         }
 
-        if !current.actions.is_empty()
-            || !current.new_users.is_empty()
-            || !current.new_regions.is_empty()
-        {
+        if has_pending(&current) {
             finalize_segment(&current);
             flushed_id.store(current.segment_id, Ordering::Relaxed);
         }

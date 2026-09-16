@@ -214,6 +214,8 @@ pub fn build_router(state: AppState) -> Router {
             "/admin/revert/point-in-time",
             post(admin_revert_point_in_time),
         )
+        .route("/admin/revert/status", get(admin_revert_status))
+        .route("/admin/wipe-author", post(admin_wipe_author))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             require_admin_token,
@@ -451,9 +453,8 @@ async fn admin_revert_filtered(
     };
 
     let state_for_lookup = state.clone();
-    let outcomes = crate::revert::compute_revert(&filter, &actions, |pos| {
-        state_for_lookup.current_cell(pos)
-    });
+    let outcomes =
+        crate::revert::compute_revert(&filter, &actions, |pos| state_for_lookup.current_cell(pos));
 
     let restore_count = outcomes
         .iter()
@@ -478,9 +479,9 @@ async fn admin_revert_filtered(
     let updates: Vec<(WorldCoords, Option<StoredChunkCell>)> = outcomes
         .iter()
         .filter_map(|o| match o {
-            crate::revert::RevertOutcome::Restore { pos, restore_to, .. } => {
-                Some((*pos, restore_to.clone()))
-            }
+            crate::revert::RevertOutcome::Restore {
+                pos, restore_to, ..
+            } => Some((*pos, restore_to.clone())),
             _ => None,
         })
         .collect();
@@ -495,6 +496,114 @@ async fn admin_revert_filtered(
     queue_action_for_broadcast(&state, &action, "system");
 
     Json(build_preview(&outcomes, false, true)).into_response()
+}
+
+#[derive(serde::Serialize)]
+struct RevertStatus {
+    hot_buffer_len: usize,
+    hot_buffer_oldest_action_id: Option<u64>,
+    hot_buffer_newest_action_id: Option<u64>,
+    next_action_id: u64,
+    segments_on_disk: usize,
+    last_flushed_segment_id: u64,
+}
+
+async fn admin_revert_status(State(state): State<AppState>) -> impl IntoResponse {
+    let (hot_buffer_len, hot_buffer_oldest_action_id, hot_buffer_newest_action_id) = {
+        let buf = state.inner.hot_buffer.lock().unwrap();
+        (
+            buf.len(),
+            buf.front().map(|a| a.action_id),
+            buf.back().map(|a| a.action_id),
+        )
+    };
+    let next_action_id = state.inner.next_action_id.load(Ordering::Relaxed);
+    let last_flushed_segment_id = state.inner.last_flushed_segment_id.load(Ordering::Relaxed);
+    let segments_on_disk = crate::persistence::collect_seg_paths_after(0).len();
+
+    Json(RevertStatus {
+        hot_buffer_len,
+        hot_buffer_oldest_action_id,
+        hot_buffer_newest_action_id,
+        next_action_id,
+        segments_on_disk,
+        last_flushed_segment_id,
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct WipeAuthorPayload {
+    author_id: u32,
+    #[serde(default = "default_true")]
+    dry_run: bool,
+    #[serde(default)]
+    force: bool,
+    operator: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct WipeAuthorPreview {
+    dry_run: bool,
+    applied: bool,
+    author_id: u32,
+    cleared_count: usize,
+    sample: Vec<WorldCoords>,
+    truncated: bool,
+}
+
+async fn admin_wipe_author(
+    State(state): State<AppState>,
+    Json(payload): Json<WipeAuthorPayload>,
+) -> impl IntoResponse {
+    let positions = state.find_cells_by_author(payload.author_id);
+
+    if positions.len() > crate::revert::MAX_REVERT_POSITIONS && !payload.force {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "wipe would affect {} positions (cap {}); set force=true to proceed",
+                positions.len(),
+                crate::revert::MAX_REVERT_POSITIONS
+            ),
+        )
+            .into_response();
+    }
+
+    let sample = positions.iter().take(REVERT_SAMPLE_CAP).copied().collect();
+
+    if payload.dry_run {
+        return Json(WipeAuthorPreview {
+            dry_run: true,
+            applied: false,
+            author_id: payload.author_id,
+            cleared_count: positions.len(),
+            sample,
+            truncated: positions.len() > REVERT_SAMPLE_CAP,
+        })
+        .into_response();
+    }
+
+    let updates: Vec<(WorldCoords, Option<StoredChunkCell>)> =
+        positions.iter().map(|&pos| (pos, None)).collect();
+
+    tracing::warn!(
+        author_id = payload.author_id,
+        cleared_count = updates.len(),
+        operator = ?payload.operator,
+        "admin wipe-author apply"
+    );
+    let action = state.apply_action_batch(0, updates).await;
+    queue_action_for_broadcast(&state, &action, "system");
+
+    Json(WipeAuthorPreview {
+        dry_run: false,
+        applied: true,
+        author_id: payload.author_id,
+        cleared_count: positions.len(),
+        sample,
+        truncated: positions.len() > REVERT_SAMPLE_CAP,
+    })
+    .into_response()
 }
 
 async fn admin_revert_point_in_time(
@@ -548,11 +657,10 @@ async fn admin_revert_point_in_time(
         .collect();
 
     let state_for_lookup = state.clone();
-    let outcomes = crate::revert::compute_point_in_time_revert(
-        &target,
-        touched_after.into_iter(),
-        |pos| state_for_lookup.current_cell(pos),
-    );
+    let outcomes =
+        crate::revert::compute_point_in_time_revert(&target, touched_after.into_iter(), |pos| {
+            state_for_lookup.current_cell(pos)
+        });
 
     let restore_count = outcomes
         .iter()
@@ -577,9 +685,9 @@ async fn admin_revert_point_in_time(
     let updates: Vec<(WorldCoords, Option<StoredChunkCell>)> = outcomes
         .iter()
         .filter_map(|o| match o {
-            crate::revert::RevertOutcome::Restore { pos, restore_to, .. } => {
-                Some((*pos, restore_to.clone()))
-            }
+            crate::revert::RevertOutcome::Restore {
+                pos, restore_to, ..
+            } => Some((*pos, restore_to.clone())),
             _ => None,
         })
         .collect();

@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::{
         Arc, Mutex, RwLock,
-        atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -219,6 +219,7 @@ pub struct AppStateInner {
     pub tx: broadcast::Sender<Vec<u8>>,
     pub segment_tx: mpsc::UnboundedSender<SegmentEvent>,
     pub last_flushed_segment_id: Arc<AtomicU64>,
+    pub force_segment_flush: Arc<AtomicBool>,
 
     pub cell_update_buffer: Mutex<Vec<(CellUpdateEntry, String)>>,
     pub hot_buffer: Mutex<VecDeque<Action>>,
@@ -278,6 +279,7 @@ impl AppState {
             hot_buffer: Mutex::new(VecDeque::new()),
             cell_rate: Mutex::new(HashMap::new()),
             last_flushed_segment_id: Arc::new(AtomicU64::new(0)),
+            force_segment_flush: Arc::new(AtomicBool::new(false)),
             font_atlas,
             index_html,
             admin_token,
@@ -392,6 +394,21 @@ impl AppState {
             .read()
             .unwrap()
             .get_cell(chunk, local.to_index())
+    }
+
+    pub fn find_cells_by_author(&self, author_id: u32) -> Vec<WorldCoords> {
+        let mut positions = Vec::new();
+        for shard in &self.inner.shards {
+            let shard = shard.read().unwrap();
+            for chunk in shard.snapshot() {
+                for cell in chunk.cells {
+                    if cell.author_id == author_id {
+                        positions.push(WorldCoords::from_chunk(chunk.coords, cell.local));
+                    }
+                }
+            }
+        }
+        positions
     }
 
     pub async fn username_of(&self, uid: u32) -> String {

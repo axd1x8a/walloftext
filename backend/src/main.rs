@@ -41,14 +41,46 @@ async fn main() -> anyhow::Result<()> {
         segment_rx,
         last_segment_id,
         state.inner.last_flushed_segment_id.clone(),
+        state.inner.force_segment_flush.clone(),
     );
     state.start_snapshot_worker();
     state.start_cell_update_worker();
 
+    let force_flush_on_shutdown = state.inner.force_segment_flush.clone();
     let app = network::build_router(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
     info!("Listening on {}", addr);
-    axum::serve(tokio::net::TcpListener::bind(addr).await?, app).await?;
+    axum::serve(tokio::net::TcpListener::bind(addr).await?, app)
+        .with_graceful_shutdown(shutdown_signal(force_flush_on_shutdown))
+        .await?;
     Ok(())
+}
+
+async fn shutdown_signal(force_flush: Arc<std::sync::atomic::AtomicBool>) {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    info!("shutdown signal received, flushing pending segment data...");
+    force_flush.store(true, std::sync::atomic::Ordering::Relaxed);
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 }
