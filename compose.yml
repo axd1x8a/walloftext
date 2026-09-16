@@ -9,3 +9,5 @@ services:
       dockerfile: Dockerfile
     volumes:
       - ./data:/app/data
+    env_file:
+      - .env
