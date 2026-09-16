@@ -14,6 +14,7 @@ RUN mkdir -p shared/src backend/src backend/src/bin frontend/src tools/font-gen/
     && touch shared/src/lib.rs frontend/src/lib.rs \
     && echo 'fn main(){}' > backend/src/main.rs \
     && echo 'fn main(){}' > backend/src/bin/migrate_snapshot.rs \
+    && echo 'fn main(){}' > backend/src/bin/admin_revert.rs \
     && echo 'fn main(){}' > tools/font-gen/src/main.rs \
     && echo 'fn main(){}' > tools/video/src/main.rs
 
