@@ -5,3 +5,4 @@ compose.override.y*ml
 walloftext.aof
 walloftext.snap*
 segments/
+.env

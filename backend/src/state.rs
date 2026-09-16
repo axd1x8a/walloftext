@@ -148,7 +148,6 @@ impl WorldShard {
             .and_then(|arr| arr[arr_idx].take())
     }
 
-    #[allow(dead_code)]
     pub fn get_cell(&self, chunk: ChunkCoords, arr_idx: usize) -> Option<StoredChunkCell> {
         self.chunks.get(&chunk).and_then(|arr| arr[arr_idx].clone())
     }
@@ -227,6 +226,8 @@ pub struct AppStateInner {
 
     pub font_atlas: Arc<FontAtlasFile>,
     pub index_html: Arc<String>,
+
+    pub admin_token: String,
 }
 
 #[derive(Clone)]
@@ -246,6 +247,7 @@ impl AppState {
         segment_tx: mpsc::UnboundedSender<SegmentEvent>,
         font_atlas: Arc<FontAtlasFile>,
         index_html: Arc<String>,
+        admin_token: String,
     ) -> Self {
         let shards = (0..NUM_SHARDS)
             .map(|_| {
@@ -278,6 +280,7 @@ impl AppState {
             last_flushed_segment_id: Arc::new(AtomicU64::new(0)),
             font_atlas,
             index_html,
+            admin_token,
         };
 
         Self {
@@ -381,6 +384,14 @@ impl AppState {
             .send(SegmentEvent::Action(action.clone()));
 
         action
+    }
+
+    pub fn current_cell(&self, pos: WorldCoords) -> Option<StoredChunkCell> {
+        let (chunk, local) = pos.to_chunk();
+        self.inner.shards[chunk.shard_idx()]
+            .read()
+            .unwrap()
+            .get_cell(chunk, local.to_index())
     }
 
     pub async fn username_of(&self, uid: u32) -> String {

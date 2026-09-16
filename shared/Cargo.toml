@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 bitcode.workspace = true
+serde = { version = "1", features = ["derive"] }

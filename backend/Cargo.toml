@@ -11,6 +11,10 @@ path = "src/main.rs"
 name = "migrate-snapshot"
 path = "src/bin/migrate_snapshot.rs"
 
+[[bin]]
+name = "admin-revert"
+path = "src/bin/admin_revert.rs"
+
 [dependencies]
 walloftext-shared.workspace  = true
 bitcode.workspace            = true
@@ -26,3 +30,5 @@ tracing-subscriber = "0.3"
 thiserror         = "2"
 rand              = "0.10"
 image             = { version = "0.25", default-features = false, features = ["png"] }
+clap              = { version = "4", features = ["derive"] }
+dotenvy           = "0.15"

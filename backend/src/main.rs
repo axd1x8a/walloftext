@@ -3,6 +3,7 @@ mod error;
 mod network;
 mod persistence;
 mod preview;
+mod revert;
 mod state;
 
 use std::net::SocketAddr;
@@ -13,6 +14,7 @@ use walloftext_shared::FontAtlasFile;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    dotenvy::dotenv().ok();
     tracing_subscriber::fmt::init();
 
     let atlas_bytes = std::fs::read("static/unifont.wtfont")
@@ -28,9 +30,12 @@ async fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("failed to read index.html: {e}"))?,
     );
 
+    let admin_token = std::env::var("ADMIN_TOKEN")
+        .map_err(|_| anyhow::anyhow!("ADMIN_TOKEN env var must be set"))?;
+
     let (segment_tx, segment_rx) = mpsc::unbounded_channel();
 
-    let state = state::AppState::new(segment_tx, font_atlas, index_html);
+    let state = state::AppState::new(segment_tx, font_atlas, index_html, admin_token);
     let last_segment_id = state.hydrate().await?;
     persistence::start_segment_worker(
         segment_rx,

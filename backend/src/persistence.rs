@@ -96,7 +96,7 @@ pub fn finalize_segment(segment: &Segment) {
     );
 }
 
-fn collect_seg_paths_after(base_id: u64) -> Vec<std::path::PathBuf> {
+pub fn collect_seg_paths_after(base_id: u64) -> Vec<std::path::PathBuf> {
     let mut paths: Vec<_> = std::fs::read_dir(SEGMENT_DIR)
         .into_iter()
         .flatten()
@@ -115,6 +115,18 @@ fn collect_seg_paths_after(base_id: u64) -> Vec<std::path::PathBuf> {
     paths
 }
 
+pub fn read_segment_file(path: &std::path::Path) -> anyhow::Result<Segment> {
+    let compressed = std::fs::read(path)?;
+    let raw = zstd::decode_all(compressed.as_slice())?;
+    bitcode::decode(&raw).map_err(|e| anyhow::anyhow!("decode segment {:?}: {}", path, e))
+}
+
+pub fn read_snapshot_file(path: &std::path::Path) -> anyhow::Result<WorldSnapshot> {
+    let compressed = std::fs::read(path)?;
+    let raw = zstd::decode_all(compressed.as_slice())?;
+    bitcode::decode(&raw).map_err(|e| anyhow::anyhow!("decode snapshot: {}", e))
+}
+
 impl AppState {
     pub async fn hydrate(&self) -> anyhow::Result<u64> {
         std::fs::create_dir_all(SEGMENT_DIR)?;
@@ -122,10 +134,8 @@ impl AppState {
         let snap_exists = std::path::Path::new(SNAPSHOT_PATH).exists();
 
         let base_segment_id = if snap_exists {
-            let snap = tokio::task::spawn_blocking(|| -> anyhow::Result<WorldSnapshot> {
-                let compressed = std::fs::read(SNAPSHOT_PATH)?;
-                let raw = zstd::decode_all(compressed.as_slice())?;
-                bitcode::decode(&raw).map_err(|e| anyhow::anyhow!("decode snapshot: {}", e))
+            let snap = tokio::task::spawn_blocking(|| {
+                read_snapshot_file(std::path::Path::new(SNAPSHOT_PATH))
             })
             .await??;
             let based_on = snap.based_on_segment_id;
@@ -158,10 +168,7 @@ impl AppState {
             let mut cells_delta: i64 = 0;
 
             for path in &seg_paths {
-                let compressed = std::fs::read(path)?;
-                let raw = zstd::decode_all(compressed.as_slice())?;
-                let segment: Segment = bitcode::decode(&raw)
-                    .map_err(|e| anyhow::anyhow!("decode segment {:?}: {}", path, e))?;
+                let segment = read_segment_file(path)?;
 
                 last_segment_id = segment.segment_id;
 

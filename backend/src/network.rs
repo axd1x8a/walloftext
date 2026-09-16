@@ -207,13 +207,54 @@ pub fn broadcast_transient_updates(
 }
 
 pub fn build_router(state: AppState) -> Router {
+    let admin_routes = Router::new()
+        .route("/admin/reset-password", post(admin_reset_password))
+        .route("/admin/revert/filtered", post(admin_revert_filtered))
+        .route(
+            "/admin/revert/point-in-time",
+            post(admin_revert_point_in_time),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_admin_token,
+        ));
+
     Router::new()
         .route("/ws", get(ws_handler))
-        .route("/admin/reset-password", post(admin_reset_password))
         .route("/og/preview", get(crate::preview::og_preview_handler))
         .route("/", get(crate::preview::index_html_handler))
+        .merge(admin_routes)
         .fallback_service(ServeDir::new("static"))
         .with_state(state)
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+async fn require_admin_token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, StatusCode> {
+    let provided = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    match provided {
+        Some(t) if constant_time_eq(t.as_bytes(), state.inner.admin_token.as_bytes()) => {
+            Ok(next.run(req).await)
+        }
+        _ => Err(StatusCode::UNAUTHORIZED),
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -229,6 +270,330 @@ async fn admin_reset_password(
         Ok(()) => (StatusCode::OK, "password reset").into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(serde::Deserialize)]
+struct RevertFilteredPayload {
+    author_id: Option<u32>,
+    region: Option<walloftext_shared::WorldRect>,
+    ts_from: Option<i64>,
+    ts_to: Option<i64>,
+    action_id_from: Option<u64>,
+    action_id_to: Option<u64>,
+    #[serde(default = "default_true")]
+    dry_run: bool,
+    #[serde(default)]
+    allow_unbounded: bool,
+    #[serde(default)]
+    force: bool,
+    operator: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RevertPointInTimePayload {
+    before_ts: Option<i64>,
+    before_action_id: Option<u64>,
+    region: Option<walloftext_shared::WorldRect>,
+    #[serde(default = "default_true")]
+    dry_run: bool,
+    #[serde(default)]
+    force: bool,
+    operator: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct RevertOutcomeView {
+    pos: WorldCoords,
+    kind: &'static str,
+    current_ch: Option<char>,
+    current_author: Option<u32>,
+    restore_ch: Option<char>,
+    restore_author: Option<u32>,
+    targeted_touch_count: Option<u32>,
+    earliest_targeted_action_id: Option<u64>,
+    overwritten_by_author: Option<u32>,
+    overwritten_at_action_id: Option<u64>,
+}
+
+#[derive(serde::Serialize)]
+struct RevertPreview {
+    dry_run: bool,
+    applied: bool,
+    restore_count: usize,
+    skipped_overwritten_count: usize,
+    skipped_nochange_count: usize,
+    affected_authors: Vec<(u32, u32)>,
+    sample: Vec<RevertOutcomeView>,
+    truncated: bool,
+}
+
+const REVERT_SAMPLE_CAP: usize = 200;
+
+fn build_preview(
+    outcomes: &[crate::revert::RevertOutcome],
+    dry_run: bool,
+    applied: bool,
+) -> RevertPreview {
+    use crate::revert::{RevertOutcome, SkipReason};
+
+    let mut restore_count = 0;
+    let mut skipped_overwritten_count = 0;
+    let mut skipped_nochange_count = 0;
+    let mut author_counts: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    let mut sample = Vec::new();
+
+    for outcome in outcomes {
+        match outcome {
+            RevertOutcome::Restore {
+                pos,
+                restore_to,
+                current,
+                targeted_touch_count,
+                earliest_targeted_action_id,
+            } => {
+                restore_count += 1;
+                if let Some(c) = current {
+                    *author_counts.entry(c.author_id).or_insert(0) += 1;
+                }
+                if sample.len() < REVERT_SAMPLE_CAP {
+                    sample.push(RevertOutcomeView {
+                        pos: *pos,
+                        kind: "restore",
+                        current_ch: current.as_ref().map(|c| c.ch),
+                        current_author: current.as_ref().map(|c| c.author_id),
+                        restore_ch: restore_to.as_ref().map(|c| c.ch),
+                        restore_author: restore_to.as_ref().map(|c| c.author_id),
+                        targeted_touch_count: Some(*targeted_touch_count),
+                        earliest_targeted_action_id: Some(*earliest_targeted_action_id),
+                        overwritten_by_author: None,
+                        overwritten_at_action_id: None,
+                    });
+                }
+            }
+            RevertOutcome::Skipped { pos, reason } => match reason {
+                SkipReason::OverwrittenByOther {
+                    by_author,
+                    at_action_id,
+                } => {
+                    skipped_overwritten_count += 1;
+                    if sample.len() < REVERT_SAMPLE_CAP {
+                        sample.push(RevertOutcomeView {
+                            pos: *pos,
+                            kind: "skipped_overwritten",
+                            current_ch: None,
+                            current_author: None,
+                            restore_ch: None,
+                            restore_author: None,
+                            targeted_touch_count: None,
+                            earliest_targeted_action_id: None,
+                            overwritten_by_author: Some(*by_author),
+                            overwritten_at_action_id: Some(*at_action_id),
+                        });
+                    }
+                }
+                SkipReason::NoChange => {
+                    skipped_nochange_count += 1;
+                }
+            },
+        }
+    }
+
+    let mut affected_authors: Vec<(u32, u32)> = author_counts.into_iter().collect();
+    affected_authors.sort_by_key(|(author, _)| *author);
+
+    RevertPreview {
+        dry_run,
+        applied,
+        restore_count,
+        skipped_overwritten_count,
+        skipped_nochange_count,
+        affected_authors,
+        truncated: restore_count + skipped_overwritten_count > sample.len(),
+        sample,
+    }
+}
+
+async fn admin_revert_filtered(
+    State(state): State<AppState>,
+    Json(payload): Json<RevertFilteredPayload>,
+) -> impl IntoResponse {
+    let filter = crate::revert::RevertFilter {
+        author_id: payload.author_id,
+        region: payload.region,
+        ts_range: match (payload.ts_from, payload.ts_to) {
+            (Some(a), Some(b)) => Some((a, b)),
+            _ => None,
+        },
+        action_id_range: match (payload.action_id_from, payload.action_id_to) {
+            (Some(a), Some(b)) => Some((a, b)),
+            _ => None,
+        },
+    };
+
+    if filter.is_unbounded() && !payload.allow_unbounded {
+        return (
+            StatusCode::BAD_REQUEST,
+            "filter matches everything; set allow_unbounded=true to proceed",
+        )
+            .into_response();
+    }
+
+    let lower_bound = filter.action_id_range.map(|(lo, _)| lo);
+    let actions = match crate::revert::load_live_action_history(&state, lower_bound).await {
+        Ok(a) => a,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+        }
+    };
+
+    let state_for_lookup = state.clone();
+    let outcomes = crate::revert::compute_revert(&filter, &actions, |pos| {
+        state_for_lookup.current_cell(pos)
+    });
+
+    let restore_count = outcomes
+        .iter()
+        .filter(|o| matches!(o, crate::revert::RevertOutcome::Restore { .. }))
+        .count();
+    if restore_count > crate::revert::MAX_REVERT_POSITIONS && !payload.force {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "revert would affect {} positions (cap {}); set force=true to proceed",
+                restore_count,
+                crate::revert::MAX_REVERT_POSITIONS
+            ),
+        )
+            .into_response();
+    }
+
+    if payload.dry_run {
+        return Json(build_preview(&outcomes, true, false)).into_response();
+    }
+
+    let updates: Vec<(WorldCoords, Option<StoredChunkCell>)> = outcomes
+        .iter()
+        .filter_map(|o| match o {
+            crate::revert::RevertOutcome::Restore { pos, restore_to, .. } => {
+                Some((*pos, restore_to.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+
+    tracing::warn!(
+        ?filter,
+        restore_count = updates.len(),
+        operator = ?payload.operator,
+        "admin revert apply"
+    );
+    let action = state.apply_action_batch(0, updates).await;
+    queue_action_for_broadcast(&state, &action, "system");
+
+    Json(build_preview(&outcomes, false, true)).into_response()
+}
+
+async fn admin_revert_point_in_time(
+    State(state): State<AppState>,
+    Json(payload): Json<RevertPointInTimePayload>,
+) -> impl IntoResponse {
+    if payload.before_ts.is_none() && payload.before_action_id.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            "before_ts or before_action_id is required",
+        )
+            .into_response();
+    }
+
+    let cutoff = crate::revert::PointInTimeCutoff {
+        before_ts: payload.before_ts,
+        before_action_id: payload.before_action_id,
+        region: payload.region,
+    };
+
+    let snapshot_chunks = match tokio::task::spawn_blocking(|| {
+        let path = std::path::Path::new(crate::state::SNAPSHOT_PATH);
+        if path.exists() {
+            crate::persistence::read_snapshot_file(path).map(|s| s.chunks)
+        } else {
+            Ok(Vec::new())
+        }
+    })
+    .await
+    {
+        Ok(Ok(chunks)) => chunks,
+        Ok(Err(e)) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let actions = match crate::revert::load_live_action_history(&state, None).await {
+        Ok(a) => a,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+
+    let target = crate::revert::compute_state_as_of(&cutoff, &snapshot_chunks, &actions);
+
+    let touched_after: Vec<WorldCoords> = actions
+        .iter()
+        .filter(|a| {
+            cutoff.before_action_id.is_some_and(|id| a.action_id >= id)
+                || cutoff.before_ts.is_some_and(|t| a.ts >= t)
+        })
+        .flat_map(|a| a.changes.iter().map(|c| c.pos))
+        .filter(|pos| payload.region.is_none_or(|r| r.contains(*pos)))
+        .collect();
+
+    let state_for_lookup = state.clone();
+    let outcomes = crate::revert::compute_point_in_time_revert(
+        &target,
+        touched_after.into_iter(),
+        |pos| state_for_lookup.current_cell(pos),
+    );
+
+    let restore_count = outcomes
+        .iter()
+        .filter(|o| matches!(o, crate::revert::RevertOutcome::Restore { .. }))
+        .count();
+    if restore_count > crate::revert::MAX_REVERT_POSITIONS && !payload.force {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(
+                "revert would affect {} positions (cap {}); set force=true to proceed",
+                restore_count,
+                crate::revert::MAX_REVERT_POSITIONS
+            ),
+        )
+            .into_response();
+    }
+
+    if payload.dry_run {
+        return Json(build_preview(&outcomes, true, false)).into_response();
+    }
+
+    let updates: Vec<(WorldCoords, Option<StoredChunkCell>)> = outcomes
+        .iter()
+        .filter_map(|o| match o {
+            crate::revert::RevertOutcome::Restore { pos, restore_to, .. } => {
+                Some((*pos, restore_to.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+
+    tracing::warn!(
+        ?cutoff,
+        restore_count = updates.len(),
+        operator = ?payload.operator,
+        "admin revert point-in-time apply"
+    );
+    let action = state.apply_action_batch(0, updates).await;
+    queue_action_for_broadcast(&state, &action, "system");
+
+    Json(build_preview(&outcomes, false, true)).into_response()
 }
 
 pub fn extract_ip(headers: &HeaderMap) -> String {

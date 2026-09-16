@@ -19,7 +19,7 @@ pub const MAX_PROTECTED_CELLS: u64 = 256;
 
 pub const NUM_SHARDS: usize = 64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Encode, Decode)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Encode, Decode, serde::Serialize, serde::Deserialize)]
 pub struct WorldCoords {
     pub x: i16,
     pub y: i16,
@@ -71,6 +71,14 @@ impl WorldCoords {
     pub fn offset(self, dx: i64, dy: i64) -> Self {
         Self::from_i64(self.x as i64 + dx, self.y as i64 + dy)
     }
+
+    #[inline]
+    pub fn from_chunk(chunk: ChunkCoords, local: ChunkLocalCoords) -> Self {
+        Self::from_i64(
+            chunk.x as i64 * CHUNK_W + local.x as i64,
+            chunk.y as i64 * CHUNK_H + local.y as i64,
+        )
+    }
 }
 
 impl ChunkCoords {
@@ -96,7 +104,7 @@ impl ChunkLocalCoords {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Encode, Decode)]
+#[derive(Debug, Clone, Copy, PartialEq, Encode, Decode, serde::Serialize, serde::Deserialize)]
 pub struct Rgb(pub u8, pub u8, pub u8);
 
 impl Rgb {
@@ -134,7 +142,7 @@ pub struct LodCell {
     pub color: Rgb,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Encode, Decode, serde::Serialize, serde::Deserialize)]
 pub struct WorldRect {
     pub a: WorldCoords,
     pub b: WorldCoords,
